@@ -4,7 +4,7 @@
 
 I build Mac apps with Cursor, Claude Code and Codex. Every time an agent wanted to check its work, it opened the app on my screen and took the focus while I was doing something else. Now the agents build on my Mac as usual, then `testvm` copies the `.app` into a VM running under [Tart](https://tart.run) and drives it over SSH. The VM has no window, so nothing shows up on my screen.
 
-I explain how it works, step by step, in [How to let coding agents test Mac apps in a VM](https://flaviocopes.com/mac-test-vm/).
+I wrote about it on my blog, in [the announcement](https://flaviocopes.com/testvm/) and in [How to let coding agents test Mac apps in a VM](https://flaviocopes.com/mac-test-vm/), which explains how it works step by step.
 
 ## Install
 
