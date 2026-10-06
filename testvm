@@ -1,0 +1,571 @@
+#!/bin/bash
+# Launch, screenshot and drive Mac app builds inside a macOS VM (or another Mac)
+# so testing never takes over this screen. Run `testvm help` for the commands.
+set -euo pipefail
+
+VERSION="1.1.0"
+
+usage() {
+  cat <<'EOF'
+testvm: run and test Mac app builds in the test VM instead of on this screen
+
+  testvm open <App.app> [args]   copy the build into the VM, launch it, wait for a window
+  testvm open <Name>             relaunch an app already copied into the VM
+  testvm shot [Name] [out.png]   screenshot the whole VM screen, or just Name's front window
+  testvm ui <Name>               list the app's controls with text and click coordinates
+  testvm click <x> <y>           click at screen coordinates (points)
+  testvm type <text>             type text into the frontmost app
+  testvm key <combo>             press keys: cmd+n, cmd+shift+s, return, esc, arrow-down
+  testvm script [args]           run AppleScript from stdin in the VM (System Events, menus)
+  testvm quit <Name>             quit the app
+  testvm logs <Name>             print the app's stdout/stderr since it was launched
+  testvm push <local> [remote]   copy files or folders into the VM (default: home folder)
+  testvm pull <remote> [local]   copy files out of the VM
+  testvm run <command>           run a shell command in the VM
+  testvm ssh                     open an interactive shell in the VM
+  testvm start | stop | status   manage the VM (other commands start it when needed)
+  testvm setup                   download and configure the VM from scratch
+  testvm note <text>             say what you're testing, shown in VM Monitor
+  testvm capabilities [--json]   summary and task list for agents
+
+Every command is logged to ~/Library/Logs/testvm/activity.jsonl with the agent that ran it.
+Settings go in ~/.config/testvm/config: https://github.com/flaviocopes/testvm#settings
+EOF
+}
+
+capabilities_json() {
+  cat <<JSON
+{
+  "name": "testvm",
+  "version": "$VERSION",
+  "summary": "Runs Mac app builds in a headless macOS VM so coding agents can launch, screenshot and click through them without taking over your screen.",
+  "capabilities": [
+    { "description": "Open an app build in the test VM", "command": "testvm open build/Build/Products/Debug/Skillscout.app" },
+    { "description": "Screenshot an app's window for visual checks", "command": "testvm shot Skillscout" },
+    { "description": "List UI controls with labels and click coordinates", "command": "testvm ui Skillscout" },
+    { "description": "Click at screen coordinates in the VM", "command": "testvm click 255 200" },
+    { "description": "Type text into the frontmost app", "command": "testvm type 'Buy milk'" },
+    { "description": "Press a keyboard shortcut or special key", "command": "testvm key cmd+n" },
+    { "description": "Copy test data or files into the VM", "command": "testvm push ~/Documents/sample-notes/ Documents/sample-notes/" },
+    { "description": "Tell VM Monitor what you are testing", "command": "testvm note 'Checking the new Sort by usage menu in Skillscout'" },
+    { "description": "Check whether the test VM is running", "command": "testvm status" }
+  ],
+  "changelog": [
+    {
+      "version": "1.1.0",
+      "date": "2026-10-06",
+      "changes": [
+        "Moved to its own repo, flaviocopes/testvm",
+        "Set the VM's image, cores, memory and display size in ~/.config/testvm/config",
+        "Checks the host key of another Mac instead of trusting any machine at that name",
+        "Finds cliclick on Intel Macs too"
+      ]
+    },
+    {
+      "version": "1.0.0",
+      "date": "2026-10-03",
+      "changes": [
+        "Launch, screenshot and drive Mac apps in a headless macOS VM under Tart",
+        "Log every command with agent and chat metadata for VM Monitor",
+        "Copy files in and out, run shell commands, and open an SSH shell in the VM"
+      ]
+    }
+  ]
+}
+JSON
+}
+
+print_capabilities() {
+  echo "testvm $VERSION"
+  echo "Runs Mac app builds in a headless macOS VM so coding agents can launch, screenshot and click through them without taking over your screen."
+  echo
+  echo "What it can do:"
+  echo "  Open an app build in the test VM"
+  echo "    \$ testvm open build/Build/Products/Debug/Skillscout.app"
+  echo "  Screenshot an app's window for visual checks"
+  echo "    \$ testvm shot Skillscout"
+  echo "  List UI controls with labels and click coordinates"
+  echo "    \$ testvm ui Skillscout"
+  echo "  Click at screen coordinates in the VM"
+  echo "    \$ testvm click 255 200"
+  echo "  Type text into the frontmost app"
+  echo "    \$ testvm type 'Buy milk'"
+  echo "  Press a keyboard shortcut or special key"
+  echo "    \$ testvm key cmd+n"
+  echo "  Copy test data or files into the VM"
+  echo "    \$ testvm push ~/Documents/sample-notes/ Documents/sample-notes/"
+  echo "  Tell VM Monitor what you are testing"
+  echo "    \$ testvm note 'Checking the new Sort by usage menu in Skillscout'"
+  echo "  Check whether the test VM is running"
+  echo "    \$ testvm status"
+  echo
+  echo "Changes:"
+  echo "  1.1.0 (2026-10-06)"
+  echo "    - Moved to its own repo, flaviocopes/testvm"
+  echo "    - Set the VM's image, cores, memory and display size in ~/.config/testvm/config"
+  echo "    - Checks the host key of another Mac instead of trusting any machine at that name"
+  echo "    - Finds cliclick on Intel Macs too"
+  echo "  1.0.0 (2026-10-03)"
+  echo "    - Launch, screenshot and drive Mac apps in a headless macOS VM under Tart"
+  echo "    - Log every command with agent and chat metadata for VM Monitor"
+  echo "    - Copy files in and out, run shell commands, and open an SSH shell in the VM"
+}
+
+case "${1:-help}" in
+  help|-h|--help) usage; exit 0 ;;
+  --version|-V) echo "testvm $VERSION"; exit 0 ;;
+  capabilities)
+    shift || true
+    want_json=false
+    for arg in "$@"; do [ "$arg" = --json ] && want_json=true; done
+    if $want_json; then capabilities_json; else print_capabilities; fi
+    exit 0
+    ;;
+esac
+
+VM=mac-test
+VM_IMAGE=ghcr.io/cirruslabs/macos-sequoia-base:latest
+VM_CPUS=4
+VM_MEMORY=8192
+VM_DISPLAY=1512x982
+TEST_HOST=""
+TEST_USER=admin
+KEY="$HOME/.ssh/testvm_ed25519"
+LABEL=com.flaviocopes.testvm
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+SHOTS=/tmp/testvm
+TART=$(command -v tart || echo /opt/homebrew/bin/tart)
+CLICLICK='PATH=/opt/homebrew/bin:/usr/local/bin:$PATH cliclick'
+
+# Every command writes a start line and an end line here, with the agent and the chat that ran it.
+# Its output goes to runs/<id>.txt. VM Monitor reads both.
+ACTIVITY_DIR="$HOME/Library/Logs/testvm"
+ACTIVITY="$ACTIVITY_DIR/activity.jsonl"
+RUNS="$ACTIVITY_DIR/runs"
+
+# Overrides the settings above, like VM_MEMORY=16384, or TEST_HOST=mini.local and TEST_USER=flavio
+# to test on another Mac.
+CONFIG="$HOME/.config/testvm/config"
+[ -f "$CONFIG" ] && source "$CONFIG"
+
+# The VM's address changes between restarts and other Tart VMs can get it next, so a saved host key
+# would only raise false alarms. Another Mac keeps its name and its key, so a new key there is a reason to stop.
+if [ -z "$TEST_HOST" ]; then
+  HOST_KEY_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+else
+  HOST_KEY_OPTS=(-o StrictHostKeyChecking=accept-new)
+fi
+
+SSH_OPTS=(-i "$KEY" "${HOST_KEY_OPTS[@]}"
+  -o LogLevel=ERROR -o ConnectTimeout=5 -o BatchMode=yes
+  -o ControlMaster=auto -o ControlPath=/tmp/testvm-ssh-%C -o ControlPersist=10m)
+
+die() { echo "testvm: $*" >&2; exit 1; }
+
+q() { printf '%q ' "$@"; }
+
+using_vm() { [ -z "$TEST_HOST" ]; }
+
+vm_running() { "$TART" list 2>/dev/null | awk -v vm="$VM" '$2 == vm && $NF == "running" { found = 1 } END { exit !found }'; }
+
+IP=""
+resolve_ip() {
+  if using_vm; then IP=$("$TART" ip "$VM" --wait 120 2>/dev/null) || IP=""; else IP="$TEST_HOST"; fi
+}
+
+target() { echo "$TEST_USER@$IP"; }
+
+remote() {
+  [ -n "$IP" ] || resolve_ip
+  [ -n "$IP" ] || die "the VM isn't running, try: testvm start"
+  ssh "${SSH_OPTS[@]}" "$(target)" "$@"
+}
+
+ensure() {
+  if using_vm && ! vm_running; then start; fi
+  [ -n "$IP" ] || resolve_ip
+}
+
+write_plist() {
+  mkdir -p "$(dirname "$PLIST")"
+  cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$TART</string><string>run</string><string>--no-graphics</string><string>--no-audio</string><string>$VM</string>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/testvm.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/testvm.log</string>
+</dict>
+</plist>
+EOF
+}
+
+start() {
+  using_vm || { remote true || die "can't reach $TEST_HOST"; return; }
+  if ! vm_running; then
+    [ -f "$PLIST" ] || write_plist
+    launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+    launchctl kickstart "gui/$(id -u)/$LABEL"
+  fi
+  for _ in $(seq 1 90); do
+    resolve_ip
+    if [ -n "$IP" ] && ssh "${SSH_OPTS[@]}" "$(target)" 'pgrep -xu "$USER" Dock && pgrep -xu "$USER" Finder' >/dev/null 2>&1; then
+      sleep 2
+      return
+    fi
+    sleep 2
+  done
+  die "VM didn't come up, see ~/Library/Logs/testvm.log"
+}
+
+stop() {
+  using_vm || die "stop only works for the VM"
+  vm_running && "$TART" stop "$VM" >/dev/null
+  echo "stopped"
+}
+
+status() {
+  if using_vm; then
+    if vm_running; then echo "running at $("$TART" ip "$VM")"; else echo "stopped"; fi
+  else
+    remote true && echo "reachable at $TEST_HOST" || echo "can't reach $TEST_HOST"
+  fi
+}
+
+setup() {
+  using_vm || die "setup only builds the VM. For another Mac, see https://github.com/flaviocopes/testvm#test-on-another-mac"
+  [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -C testvm -f "$KEY"
+  "$TART" list | awk '{print $2}' | grep -qx "$VM" || "$TART" clone "$VM_IMAGE" "$VM"
+  vm_running || "$TART" set "$VM" --cpu "$VM_CPUS" --memory "$VM_MEMORY" --display "$VM_DISPLAY"
+  write_plist
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || true
+  vm_running || launchctl kickstart "gui/$(id -u)/$LABEL"
+  "$TART" ip "$VM" --wait 180 >/dev/null
+  for _ in $(seq 1 60); do "$TART" exec "$VM" true 2>/dev/null && break; sleep 2; done
+  "$TART" exec -i "$VM" sh -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && k=$(cat) && { grep -qxF "$k" ~/.ssh/authorized_keys 2>/dev/null || echo "$k" >> ~/.ssh/authorized_keys; } && chmod 600 ~/.ssh/authorized_keys' < "$KEY.pub"
+  remote "sudo ln -sf /usr/share/zoneinfo/$(readlink /etc/localtime | sed 's#.*/zoneinfo/##') /etc/localtime"
+  remote "VM_DISPLAY=$(q "$VM_DISPLAY") bash -s" >/dev/null 2>&1 <<'EOF'
+/opt/homebrew/bin/brew install --quiet cliclick displayplacer
+id=$(/opt/homebrew/bin/displayplacer list | awk '/Persistent screen id/ { print $4; exit }')
+/opt/homebrew/bin/displayplacer "id:$id res:$VM_DISPLAY hz:60 color_depth:7 scaling:on origin:(0,0) degree:0"
+mkdir -p ~/Apps
+screencapture -x /tmp/testvm-shot.png
+sleep 3
+osascript -e 'tell application "System Events" to tell process "UserNotificationCenter" to if exists window 1 then click button "Allow" of window 1'
+f=~/Library/Group\ Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist
+plutil -replace "/usr/libexec/sshd-keygen-wrapper.kScreenCapturePrivacyHintDate" -date 2100-01-01T00:00:00Z "$f"
+plutil -replace "/usr/libexec/sshd-keygen-wrapper.kScreenCaptureApprovalLastAlerted" -date 2099-12-01T00:00:00Z "$f"
+killall replayd
+EOF
+  echo "ready at $("$TART" ip "$VM")"
+}
+
+app_name() { local a="${1%/}"; basename "$a" .app; }
+
+install_app() {
+  local src="${1%/}"
+  [ -d "$src" ] && [[ "$src" == *.app ]] || die "not an app bundle: $src"
+  local name; name=$(app_name "$src")
+  quit_app "$name"
+  remote "mkdir -p ~/Apps"
+  rsync -a --delete -e "ssh ${SSH_OPTS[*]}" "$src" "$(target):Apps/"
+  echo "installed ~/Apps/$name.app"
+}
+
+quit_app() {
+  local name="$1"
+  remote "pkill -f $(q "/Apps/$name.app/") ; for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -f $(q "/Apps/$name.app/") >/dev/null || exit 0; sleep 0.5; done; pkill -9 -f $(q "/Apps/$name.app/") ; true"
+}
+
+window_count() {
+  remote osascript - "$(q "$1")" <<'EOF' 2>/dev/null || echo 0
+on run argv
+  tell application "System Events"
+    if not (exists process (item 1 of argv)) then return 0
+    return count windows of process (item 1 of argv)
+  end tell
+end run
+EOF
+}
+
+open_app() {
+  local arg="${1:-}"; [ -n "$arg" ] || die "usage: testvm open <App.app|Name> [args...]"
+  shift
+  local name
+  if [[ "${arg%/}" == *.app ]]; then
+    name=$(app_name "$arg")
+    install_app "$arg" >/dev/null
+  else
+    name="$arg"
+    quit_app "$name"
+  fi
+  local log="\"\$HOME\"/$(q "Apps/$name.log")"
+  local cmd="open --stdout $log --stderr $log \"\$HOME\"/$(q "Apps/$name.app")"
+  [ $# -gt 0 ] && cmd+=" --args $(q "$@")"
+  remote "rm -f $log; $cmd"
+  for _ in $(seq 1 40); do
+    if [ "$(window_count "$name")" -gt 0 ]; then echo "$name is open"; return; fi
+    sleep 0.5
+  done
+  echo "$name launched, but no window showed up after 20s (menu bar app, or check: testvm logs $(q "$name"))"
+}
+
+window_rect() {
+  remote osascript - "$(q "$1")" <<'EOF'
+on run argv
+  tell application "System Events" to tell process (item 1 of argv)
+    set frontmost to true
+    set {x, y} to position of window 1
+    set {w, h} to size of window 1
+  end tell
+  return (x as text) & "," & (y as text) & "," & (w as text) & "," & (h as text)
+end run
+EOF
+}
+
+shot() {
+  local name="${1:-}" out="${2:-}"
+  mkdir -p "$SHOTS"
+  if [ -z "$out" ]; then
+    out="$SHOTS/${name:-screen}-$(date +%H%M%S).png"
+    out="${out// /-}"
+  fi
+  local region=""
+  if [ -n "$name" ]; then
+    region=$(window_rect "$name") || die "no window for $name"
+    region="-R$region"
+    sleep 0.3
+  fi
+  remote "screencapture -x $region /tmp/testvm-shot.png && cat /tmp/testvm-shot.png" > "$out"
+  [ -s "$out" ] || die "screenshot failed"
+  echo "$out"
+}
+
+ui() {
+  local name="${1:-}"; [ -n "$name" ] || die "usage: testvm ui <Name>"
+  remote osascript - "$(q "$name")" <<'EOF'
+on txt(v)
+  if v is missing value then return ""
+  try
+    return v as text
+  on error
+    return ""
+  end try
+end txt
+
+on run argv
+  set appName to item 1 of argv
+  set out to ""
+  tell application "System Events" to tell process appName
+    if (count windows) = 0 then return "no windows"
+    set wins to every window
+    repeat with w in wins
+      set out to out & "WINDOW \"" & my txt(name of w) & "\"" & linefeed
+      set els to entire contents of w
+      repeat with e in els
+        try
+          set p to properties of e
+          set r to my txt(role of p)
+          set roleDesc to my txt(role description of p)
+          set t to my txt(title of p)
+          if t is "" then set t to my txt(description of p)
+          if t is roleDesc then set t to ""
+          set v to ""
+          try
+            set v to my txt(value of p)
+          end try
+          if length of v > 80 then set v to (text 1 thru 80 of v) & "…"
+          if r is "AXStaticText" and t is "" then
+            set t to v
+            set v to ""
+          end if
+          set interactive to r is in {"AXButton", "AXCheckBox", "AXRadioButton", "AXTextField", "AXTextArea", "AXPopUpButton", "AXMenuButton", "AXComboBox", "AXSlider", "AXLink", "AXTab", "AXSearchField", "AXSwitch", "AXDisclosureTriangle"}
+          if interactive or t is not "" or v is not "" then
+            set {px, py} to position of p
+            set {sx, sy} to size of p
+            if t is "" then
+              set line_ to r & " [" & roleDesc & "]"
+            else
+              set line_ to r & " \"" & t & "\""
+            end if
+            if v is not "" then set line_ to line_ & " = " & v
+            if (enabled of p) is false then set line_ to line_ & " (disabled)"
+            set out to out & line_ & "  center " & ((px + sx div 2) as integer) & "," & ((py + sy div 2) as integer) & linefeed
+          end if
+        end try
+      end repeat
+    end repeat
+  end tell
+  return out
+end run
+EOF
+}
+
+key() {
+  local combo="${1:-}"; [ -n "$combo" ] || die "usage: testvm key cmd+shift+n | return | esc"
+  local IFS=+; local parts=($combo); unset IFS
+  local last="${parts[${#parts[@]}-1]}" mods=""
+  local i
+  for ((i = 0; i < ${#parts[@]} - 1; i++)); do
+    case "${parts[$i]}" in
+      cmd|command) mods+="command down, " ;; alt|opt|option) mods+="option down, " ;;
+      ctrl|control) mods+="control down, " ;; shift) mods+="shift down, " ;;
+      *) die "unknown modifier ${parts[$i]}" ;;
+    esac
+  done
+  local press
+  case "$last" in
+    return) press="key code 36" ;; enter) press="key code 76" ;; tab) press="key code 48" ;;
+    esc|escape) press="key code 53" ;; space) press="key code 49" ;; delete) press="key code 51" ;;
+    fwd-delete) press="key code 117" ;; home) press="key code 115" ;; end) press="key code 119" ;;
+    page-up) press="key code 116" ;; page-down) press="key code 121" ;;
+    arrow-left|left) press="key code 123" ;; arrow-right|right) press="key code 124" ;;
+    arrow-down|down) press="key code 125" ;; arrow-up|up) press="key code 126" ;;
+    ?) [ "$last" = '"' ] && last='\"'; [ "$last" = '\' ] && last='\\'; press="keystroke \"$last\"" ;;
+    *) die "unknown key $last" ;;
+  esac
+  [ -n "$mods" ] && press+=" using {${mods%, }}"
+  remote osascript -e "$(q "tell application \"System Events\" to $press")" >/dev/null
+}
+
+json() {
+  local s
+  s=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013\014\016-\037')
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\n'/\\n}
+  printf '"%s"' "$s"
+}
+
+json_list() { local out="" a; for a in "$@"; do out+="${out:+,}$(json "$a")"; done; printf '[%s]' "$out"; }
+
+now() { /usr/bin/perl -MTime::HiRes=time -e 'printf "%.3f", time' 2>/dev/null || date +%s; }
+
+# Cursor and Codex name the chat in the environment. Claude Code doesn't, so its session
+# is the claude process found up the process tree. Anything else is a person in a terminal.
+AGENT=terminal SESSION="" TRANSCRIPT=""
+detect_agent() {
+  if [ -n "${CURSOR_CONVERSATION_ID:-}" ]; then
+    AGENT=cursor SESSION=$CURSOR_CONVERSATION_ID
+    [ -n "${AGENT_TRANSCRIPTS:-}" ] && TRANSCRIPT="$AGENT_TRANSCRIPTS/$SESSION/$SESSION.jsonl"
+    return
+  fi
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then AGENT=codex SESSION=$CODEX_THREAD_ID; return; fi
+  local found
+  found=$(ps -axo pid=,ppid=,args= 2>/dev/null | awk -v pid=$$ '
+    { parent[$1] = $2; first[$1] = $3; second[$1] = $4 }
+    END {
+      while (pid > 1 && (pid in parent)) {
+        name = first[pid]; sub(".*/", "", name)
+        if (name == "node") { name = second[pid]; sub(".*/", "", name) }
+        if (name ~ /^(claude|codex|cursor-agent|opencode|amp|gemini)$/) { print name " " pid; exit }
+        pid = parent[pid]
+      }
+    }')
+  if [ -n "$found" ]; then
+    AGENT=${found% *} SESSION="${found% *}-${found#* }"
+    [ "$AGENT" = cursor-agent ] && AGENT=cursor
+    return
+  fi
+  if [ -n "${CLAUDECODE:-}" ]; then AGENT=claude; elif [ -n "${CURSOR_AGENT:-}" ]; then AGENT=cursor; fi
+  local tty; tty=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+  SESSION=$AGENT; [ -n "$tty" ] && [ "$tty" != "??" ] && SESSION="$AGENT-$tty"
+}
+
+RUN_ID="" RUN_OUT=/dev/null RUN_INPUT="" RUN_ENDED=""
+
+# Logging must never break a test, so every write here ignores its errors.
+begin_run() {
+  mkdir -p "$RUNS" 2>/dev/null || return 0
+  local size; size=$(stat -f %z "$ACTIVITY" 2>/dev/null || echo 0)
+  if [ "$size" -gt 20000000 ]; then
+    mv -f "$ACTIVITY" "$ACTIVITY_DIR/activity.1.jsonl" 2>/dev/null || true
+    find "$RUNS" -type f -mtime +30 -delete 2>/dev/null || true
+  fi
+  detect_agent
+  RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+  RUN_OUT="$RUNS/$RUN_ID.txt"
+  local extra=""
+  [ -n "$TRANSCRIPT" ] && extra+=",\"transcript\":$(json "$TRANSCRIPT")"
+  [ -n "$RUN_INPUT" ] && extra+=",\"input\":$(json "$RUN_INPUT")"
+  local where=vm; using_vm || where=$TEST_HOST
+  printf '{"v":1,"event":"start","id":"%s","time":%s,"pid":%s,"command":%s,"args":%s,"cwd":%s,"agent":%s,"session":%s,"target":%s%s}\n' \
+    "$RUN_ID" "$(now)" "$$" "$(json "$cmd")" "$(json_list "$@")" "$(json "$PWD")" "$(json "$AGENT")" "$(json "$SESSION")" \
+    "$(json "$where")" "$extra" >> "$ACTIVITY" 2>/dev/null || true
+}
+
+end_run() {
+  [ -n "$RUN_ID" ] && [ -z "$RUN_ENDED" ] || return 0
+  RUN_ENDED=1
+  local status=$1 last=""
+  # stderr reaches the file through its own tee, which can lag a moment behind a failure.
+  [ "$status" -ne 0 ] && sleep 0.1
+  if [ -s "$RUN_OUT" ]; then
+    last=$(LC_ALL=C grep -av '^[[:space:]]*$' "$RUN_OUT" 2>/dev/null | tail -n 1 | cut -c1-300)
+  else
+    rm -f "$RUN_OUT" 2>/dev/null
+  fi
+  printf '{"v":1,"event":"end","id":"%s","time":%s,"status":%s,"last":%s}\n' \
+    "$RUN_ID" "$(now)" "$status" "$(json "$last")" >> "$ACTIVITY" 2>/dev/null || true
+}
+
+dispatch() {
+  case "$cmd" in
+  setup) setup ;;
+  start) start; status ;;
+  stop) stop ;;
+  status) status ;;
+  open) ensure; open_app "$@" ;;
+  install) ensure; install_app "${1:?usage: testvm install <App.app>}" ;;
+  quit) ensure; quit_app "${1:?usage: testvm quit <Name>}"; echo "quit ${1}" ;;
+  shot) ensure; shot "$@" ;;
+  ui) ensure; ui "$@" ;;
+  click) ensure; remote "$CLICLICK c:${1:?x},${2:?y}" ;;
+  type) ensure; remote "$CLICLICK $(q "t:${1:?text}")" ;;
+  key) ensure; key "$@" ;;
+  script) ensure; if [ $# -gt 0 ]; then remote osascript - "$(q "$@")" <<< "$RUN_INPUT"; else remote osascript - <<< "$RUN_INPUT"; fi ;;
+  logs) ensure; remote "cat $(q "Apps/${1:?usage: testvm logs <Name>}.log") 2>/dev/null || echo 'no log yet'" ;;
+  push)
+    ensure
+    src="${1:?usage: testvm push <local> [remote]}" dest="${2:-}"
+    if [[ "$dest" == */ ]]; then remote "mkdir -p $(q "$dest")"; elif [[ "$dest" == */* ]]; then remote "mkdir -p $(q "${dest%/*}")"; fi
+    rsync -a -e "ssh ${SSH_OPTS[*]}" "$src" "$(target):$dest" ;;
+  pull) ensure; rsync -a -e "ssh ${SSH_OPTS[*]}" "$(target):${1:?usage: testvm pull <remote> [local]}" "${2:-.}" ;;
+  run) ensure; remote "$@" ;;
+  ssh) ensure; ssh -t "${SSH_OPTS[@]}" "$(target)" ;;
+  note) [ $# -gt 0 ] || die "usage: testvm note <what you're testing>" ;;
+  esac
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  setup|start|stop|status|open|install|quit|shot|ui|click|type|key|script|logs|push|pull|run|ssh|note) ;;
+  *) usage; exit 1 ;;
+esac
+
+# The AppleScript comes in on stdin. Read it first, so the log has it too.
+[ "$cmd" = script ] && RUN_INPUT=$(cat)
+
+begin_run "$@"
+trap 'end_run 130; exit 130' INT
+trap 'end_run 143; exit 143' TERM
+set +e
+if [ "$cmd" = ssh ]; then
+  ( set -e; dispatch "$@" )
+  status=$?
+else
+  ( set -e; dispatch "$@" ) 2> >(tee -a "$RUN_OUT" >&2) | tee -a "$RUN_OUT"
+  status=${PIPESTATUS[0]}
+fi
+set -e
+end_run "$status"
+exit "$status"
