@@ -3,7 +3,7 @@
 # so testing never takes over this screen. Run `testvm help` for the commands.
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 usage() {
   cat <<'EOF'
@@ -25,7 +25,7 @@ testvm: run and test Mac app builds in the test VM instead of on this screen
   testvm ssh                     open an interactive shell in the VM
   testvm start | stop | status   manage the VM (other commands start it when needed)
   testvm setup                   download and configure the VM from scratch
-  testvm note <text>             say what you're testing, shown in VM Monitor
+  testvm note <text>             say what you're testing, shown in VM Peek
   testvm capabilities [--json]   summary and task list for agents
 
 Every command is logged to ~/Library/Logs/testvm/activity.jsonl with the agent that ran it.
@@ -40,17 +40,18 @@ capabilities_json() {
   "version": "$VERSION",
   "summary": "Runs Mac app builds in a headless macOS VM so coding agents can launch, screenshot and click through them without taking over your screen.",
   "capabilities": [
-    { "description": "Open an app build in the test VM", "command": "testvm open build/Build/Products/Debug/Skillscout.app" },
-    { "description": "Screenshot an app's window for visual checks", "command": "testvm shot Skillscout" },
-    { "description": "List UI controls with labels and click coordinates", "command": "testvm ui Skillscout" },
+    { "description": "Open an app build in the test VM", "command": "testvm open 'build/Build/Products/Debug/Skill Cabinet.app'" },
+    { "description": "Screenshot an app's window for visual checks", "command": "testvm shot 'Skill Cabinet'" },
+    { "description": "List UI controls with labels and click coordinates", "command": "testvm ui 'Skill Cabinet'" },
     { "description": "Click at screen coordinates in the VM", "command": "testvm click 255 200" },
     { "description": "Type text into the frontmost app", "command": "testvm type 'Buy milk'" },
     { "description": "Press a keyboard shortcut or special key", "command": "testvm key cmd+n" },
     { "description": "Copy test data or files into the VM", "command": "testvm push ~/Documents/sample-notes/ Documents/sample-notes/" },
-    { "description": "Tell VM Monitor what you are testing", "command": "testvm note 'Checking the new Sort by usage menu in Skillscout'" },
+    { "description": "Tell VM Peek what you are testing", "command": "testvm note 'Checking the new Sort by usage menu in Skill Cabinet'" },
     { "description": "Check whether the test VM is running", "command": "testvm status" }
   ],
   "changelog": [
+    { "version": "1.1.1", "date": "2026-10-08", "changes": ["Updated app examples to Skill Cabinet and activity viewer references to VM Peek. Commands and VM behavior are unchanged."] },
     {
       "version": "1.1.0",
       "date": "2026-10-06",
@@ -66,7 +67,7 @@ capabilities_json() {
       "date": "2026-10-03",
       "changes": [
         "Launch, screenshot and drive Mac apps in a headless macOS VM under Tart",
-        "Log every command with agent and chat metadata for VM Monitor",
+        "Log every command with agent and chat metadata for VM Peek",
         "Copy files in and out, run shell commands, and open an SSH shell in the VM"
       ]
     }
@@ -81,11 +82,11 @@ print_capabilities() {
   echo
   echo "What it can do:"
   echo "  Open an app build in the test VM"
-  echo "    \$ testvm open build/Build/Products/Debug/Skillscout.app"
+  echo "    \$ testvm open 'build/Build/Products/Debug/Skill Cabinet.app'"
   echo "  Screenshot an app's window for visual checks"
-  echo "    \$ testvm shot Skillscout"
+  echo "    \$ testvm shot 'Skill Cabinet'"
   echo "  List UI controls with labels and click coordinates"
-  echo "    \$ testvm ui Skillscout"
+  echo "    \$ testvm ui 'Skill Cabinet'"
   echo "  Click at screen coordinates in the VM"
   echo "    \$ testvm click 255 200"
   echo "  Type text into the frontmost app"
@@ -94,12 +95,14 @@ print_capabilities() {
   echo "    \$ testvm key cmd+n"
   echo "  Copy test data or files into the VM"
   echo "    \$ testvm push ~/Documents/sample-notes/ Documents/sample-notes/"
-  echo "  Tell VM Monitor what you are testing"
-  echo "    \$ testvm note 'Checking the new Sort by usage menu in Skillscout'"
+  echo "  Tell VM Peek what you are testing"
+  echo "    \$ testvm note 'Checking the new Sort by usage menu in Skill Cabinet'"
   echo "  Check whether the test VM is running"
   echo "    \$ testvm status"
   echo
   echo "Changes:"
+  echo "  1.1.1 (2026-10-08)"
+  echo "    - Updated app examples to Skill Cabinet and activity viewer references to VM Peek. Commands and VM behavior are unchanged."
   echo "  1.1.0 (2026-10-06)"
   echo "    - Moved to its own repo, flaviocopes/testvm"
   echo "    - Set the VM's image, cores, memory and display size in ~/.config/testvm/config"
@@ -107,7 +110,7 @@ print_capabilities() {
   echo "    - Finds cliclick on Intel Macs too"
   echo "  1.0.0 (2026-10-03)"
   echo "    - Launch, screenshot and drive Mac apps in a headless macOS VM under Tart"
-  echo "    - Log every command with agent and chat metadata for VM Monitor"
+  echo "    - Log every command with agent and chat metadata for VM Peek"
   echo "    - Copy files in and out, run shell commands, and open an SSH shell in the VM"
 }
 
@@ -138,7 +141,7 @@ TART=$(command -v tart || echo /opt/homebrew/bin/tart)
 CLICLICK='PATH=/opt/homebrew/bin:/usr/local/bin:$PATH cliclick'
 
 # Every command writes a start line and an end line here, with the agent and the chat that ran it.
-# Its output goes to runs/<id>.txt. VM Monitor reads both.
+# Its output goes to runs/<id>.txt. VM Peek reads both.
 ACTIVITY_DIR="$HOME/Library/Logs/testvm"
 ACTIVITY="$ACTIVITY_DIR/activity.jsonl"
 RUNS="$ACTIVITY_DIR/runs"

@@ -47,23 +47,23 @@ Build your app as usual, then open it in the VM:
 
 ```sh
 xcodebuild -scheme Skillscout -derivedDataPath build build
-testvm open build/Build/Products/Debug/Skillscout.app
+testvm open 'build/Build/Products/Debug/Skill Cabinet.app'
 ```
 
 `open` copies the app to `~/Apps` in the VM, quits the copy that's running, launches the new one and waits for its window. Then take a screenshot of the window:
 
 ```sh
-testvm shot Skillscout
+testvm shot 'Skill Cabinet'
 ```
 
 It prints the path of a PNG in `/tmp/testvm`. To click something, list the window's controls first. Each one comes with its label and the point to click:
 
 ```sh
-testvm ui Skillscout
+testvm ui 'Skill Cabinet'
 ```
 
 ```text
-WINDOW "Skillscout"
+WINDOW "Skill Cabinet"
 AXPopUpButton [pop up button] = Newest first  center 855,113
 AXButton "Find repeated tasks" (disabled)  center 976,113
 AXTextField [search text field]  center 1171,114
@@ -96,7 +96,7 @@ testvm run <command>           run a shell command in the VM
 testvm ssh                     open an interactive shell in the VM
 testvm start | stop | status   manage the VM (other commands start it when needed)
 testvm setup                   download and configure the VM from scratch
-testvm note <text>             say what you're testing, shown in VM Monitor
+testvm note <text>             say what you're testing, shown in VM Peek
 testvm capabilities [--json]   summary and task list for agents
 ```
 
@@ -172,9 +172,9 @@ The first `testvm ui` or `testvm script` shows a prompt on the Mac mini asking t
 
 Every command goes into `~/Library/Logs/testvm/activity.jsonl`, with the agent that ran it (Cursor, Claude Code, Codex or a terminal), its chat and the folder it ran from. What the command printed goes to `runs/<id>.txt` next to it. Agents can add what they're testing with `testvm note 'Checking the new sort menu'`.
 
-[VM Monitor](https://github.com/flaviocopes/vm-monitor) is a Mac app that reads this log. It shows the VM's screen live, which agents are using it, and every command each chat ran.
+[VM Peek](https://github.com/flaviocopes/vm-peek) is a Mac app that reads this log. It shows the VM's screen live, which agents are using it, and every command each chat ran.
 
-Several agents can use the VM at the same time. Their clicks and keys go to whatever app is in front, and VM Monitor warns you when two chats overlap.
+Several agents can use the VM at the same time. Their clicks and keys go to whatever app is in front, and VM Peek warns you when two chats overlap.
 
 ## What the VM can't do
 

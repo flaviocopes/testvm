@@ -21,7 +21,7 @@ Run the changed command against the real VM from the repo, as `./testvm`. Other 
 ## Rules
 
 - Never edit an installed copy of `testvm` in place. Write a new file and `mv` it over the old one: bash reads a script while it runs, and agents run `testvm` all the time.
-- The log in `~/Library/Logs/testvm` is a contract with [VM Monitor](https://github.com/flaviocopes/vm-monitor), which parses it in `Sources/MonitorCore/ActivityLog.swift` and `Run.swift`. Keep old lines readable: new fields are optional, and existing fields keep their meaning. VM Monitor also reads `TEST_HOST` and `TEST_USER` from the config and uses the same SSH options and `ControlPath`.
+- The log in `~/Library/Logs/testvm` is a contract with [VM Peek](https://github.com/flaviocopes/vm-peek), which parses it in `Sources/MonitorCore/ActivityLog.swift` and `Run.swift`. Keep old lines readable: new fields are optional, and existing fields keep their meaning. VM Peek also reads `TEST_HOST` and `TEST_USER` from the config and uses the same SSH options and `ControlPath`.
 - Logging must never break a test, so every write to the log ignores its errors.
 - On every release, bump `VERSION` and add the changelog entry in both `capabilities_json` and `print_capabilities`, in the same commit. Versions follow semver.
 - When a command changes, update `usage`, the command list in `README.md` and the skill together.

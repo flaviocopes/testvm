@@ -20,17 +20,17 @@ If `testvm` isn't installed, point the user to https://github.com/flaviocopes/te
 
 ## Workflow
 
-Start with a note that says what you're about to test. It goes in the log, and VM Monitor shows it next to your chat:
+Start with a note that says what you're about to test. It goes in the log, and VM Peek shows it next to your chat:
 
 ```bash
-testvm note 'Checking the new Sort by usage menu in Skillscout'
+testvm note 'Checking the new Sort by usage menu in Skill Cabinet'
 ```
 
 Then build, and open the build in the VM. `testvm` starts the VM when it's not running, which takes about 15 seconds.
 
 ```bash
 xcodebuild -project Skillscout.xcodeproj -scheme Skillscout -configuration Debug -derivedDataPath build build
-testvm open build/Build/Products/Debug/Skillscout.app
+testvm open 'build/Build/Products/Debug/Skill Cabinet.app'
 ```
 
 `testvm open` copies the app to `~/Apps` in the VM, quits the old copy, launches the new one and waits for a window. Launch arguments go after the path. For a SwiftPM app, open the `.app` its bundle script produces, not the bare executable.
@@ -38,7 +38,7 @@ testvm open build/Build/Products/Debug/Skillscout.app
 Take a screenshot of the app's window:
 
 ```bash
-testvm shot Skillscout
+testvm shot 'Skill Cabinet'
 ```
 
 It prints the path of a PNG in `/tmp/testvm`, which you can look at. Leave out the name to capture the whole VM screen, for menu bar apps, menus and alerts outside the window.
@@ -46,11 +46,11 @@ It prints the path of a PNG in `/tmp/testvm`, which you can look at. Leave out t
 To see what's in the window without guessing from pixels, list its controls. Each one comes with its text and the point to click:
 
 ```bash
-testvm ui Skillscout
+testvm ui 'Skill Cabinet'
 ```
 
 ```text
-WINDOW "Skillscout"
+WINDOW "Skill Cabinet"
 AXStaticText "Missing somewhere"  center 255,200
 AXPopUpButton [pop up button] = Newest first  center 855,113
 AXButton "Find repeated tasks" (disabled)  center 976,113
@@ -73,13 +73,13 @@ Menus, and anything else System Events can do, go through AppleScript on stdin:
 
 ```bash
 testvm script <<'EOF'
-tell application "System Events" to tell process "Skillscout"
-  click menu item "Settings…" of menu "Skillscout" of menu bar 1
+tell application "System Events" to tell process "Skill Cabinet"
+  click menu item "Settings…" of menu "Skill Cabinet" of menu bar 1
 end tell
 EOF
 ```
 
-`testvm logs Skillscout` prints what the app wrote to stdout and stderr since launch, so `print()` debugging works. `testvm quit Skillscout` quits it. Run `testvm help` for the full list, or `testvm capabilities` for the agent manifest.
+`testvm logs 'Skill Cabinet'` prints what the app wrote to stdout and stderr since launch, so `print()` debugging works. `testvm quit 'Skill Cabinet'` quits it. Run `testvm help` for the full list, or `testvm capabilities` for the agent manifest.
 
 ## Other agents
 
